@@ -12,7 +12,7 @@ const S = {
   izvor: localStorage.getItem('izleti_izvor') || 'A',
   ver: 0, listi: {}, items: [],
   zaslon: [], // sklad zaslonov
-  seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', prikaz: 'cilji', pogled: 'seznam' },
+  seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', prikaz: 'cilji', pogled: 'seznam', barve: localStorage.getItem('izleti_barve') || 'kat' },
   razisk: { pogled: 'seznam', f: privzetiFiltri(LIST_GORE) },
   vikend: { vir: 'seznam', f: privzetiFiltri(LIST_GORE), zadnji: [] },
 };
@@ -375,7 +375,13 @@ function zSeznam(m) {
   m.querySelectorAll('[data-pogled] button').forEach(b => b.onclick = () => { st.pogled = b.dataset.p; izrisi(); });
   m.querySelectorAll('[data-prikaz] button').forEach(b => b.onclick = () => { st.prikaz = b.dataset.k; izrisi(); });
   const rez = $('#rez');
-  if (st.pogled === 'karta') { rez.innerHTML = '<div class="zemljevid" id="karta"></div>' + legendaKat(arr); zemljevid($('#karta'), arr, true, st.kdo); }
+  if (st.pogled === 'karta') {
+    const poKat = st.barve === 'kat';
+    rez.innerHTML = `<div class="orodja"><span class="stevec">Barve pik:</span><div class="preklop" data-barve><button data-k="kat" class="${poKat ? 'akt' : ''}">Kategorija</button><button data-k="obisk" class="${poKat ? '' : 'akt'}">Obiskano</button></div></div>`
+      + '<div class="zemljevid" id="karta"></div>' + (poKat ? legendaKat(arr) : legenda);
+    rez.querySelectorAll('[data-barve] button').forEach(b => b.onclick = () => { st.barve = b.dataset.k; localStorage.setItem('izleti_barve', st.barve); izrisi(); });
+    zemljevid($('#karta'), arr, poKat, st.kdo);
+  }
   else { rez.className = 'seznam'; izrisiSeznam(rez, arr); }
 }
 
