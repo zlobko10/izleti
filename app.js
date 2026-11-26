@@ -12,7 +12,7 @@ const S = {
   izvor: localStorage.getItem('izleti_izvor') || 'A',
   ver: 0, listi: {}, items: [],
   zaslon: [], // sklad zaslonov
-  seznam: { tip: 'Vse', kdo: 'Skupaj', obiskani: false, pogled: 'seznam' },
+  seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', obiskani: false, pogled: 'seznam' },
   razisk: { pogled: 'seznam', f: privzetiFiltri(LIST_GORE) },
   vikend: { vir: 'seznam', f: privzetiFiltri(LIST_GORE), zadnji: [] },
 };
@@ -240,7 +240,7 @@ function kartica(it) {
   const ob = it.D && it.S ? 'oba' : it.D ? 'Danjel' : it.S ? 'Svetlana' : '';
   return `<div class="kartica" data-kljuc="${esc(it.kljuc)}" data-tip="${esc(it.tip)}">
     <span class="pika" style="background:${barva(it)}"></span>
-    <div class="tel"><div class="ime">${S.seznam.tip === 'Vse' && S.zaslon.at(-1) === 'seznam' ? (IKONE[it.tip] || '') + ' ' : ''}${esc(it.ime)}</div>
+    <div class="tel"><div class="ime">${S.zaslon.at(-1) === 'seznam' && S.seznam.tipi.length !== 1 ? (IKONE[it.tip] || '') + ' ' : ''}${esc(it.ime)}</div>
     <div class="pod">${esc(pod)}</div><div class="znacke">${zn.join('')}</div></div>
     ${ob ? `<span class="obisk">✓ ${ob}</span>` : ''}</div>`;
 }
@@ -335,15 +335,24 @@ function zDomov(m) {
 function zSeznam(m) {
   $('#naslov').textContent = 'Najin seznam';
   const st = S.seznam;
-  const tipi = ['Vse', ...(S.tipi || []).filter(t => S.items.some(i => i.tip === t && i.seznam))];
+  const tipi = (S.tipi || []).filter(t => S.items.some(i => i.tip === t && i.seznam));
+  st.tipi = st.tipi.filter(t => tipi.includes(t));
   let arr = S.items.filter(i => i.seznam && (st.obiskani ? (st.kdo === 'Vse' || i.seznam === st.kdo) : odprtNaSeznamu(i, st.kdo)));
-  if (st.tip !== 'Vse') arr = arr.filter(i => i.tip === st.tip);
+  if (st.tipi.length) arr = arr.filter(i => st.tipi.includes(i.tip));
   arr.sort((a, b) => ((a.prio ?? 9) - (b.prio ?? 9)) || ((voznja(a) ?? 9999) - (voznja(b) ?? 9999)));
-  m.innerHTML = `<div class="zavihki">${tipi.map(t => `<button class="zav${st.tip === t ? ' akt' : ''}" data-tip="${esc(t)}">${t === 'Vse' ? 'Vse' : (IKONE[t] || '') + ' ' + esc(t)}</button>`).join('')}</div>
+  m.innerHTML = `<div class="zavihki ovij"><button class="zav${st.tipi.length ? '' : ' akt'}" data-tip="">Vse</button>${tipi.map(t => `<button class="zav${st.tipi.includes(t) ? ' akt' : ''}" data-tip="${esc(t)}">${st.tipi.includes(t) ? '✓ ' : ''}${IKONE[t] || ''} ${esc(t)}</button>`).join('')}</div>
     <div class="orodja"><div class="preklop" data-kdo>${['Skupaj', 'Danjel', 'Svetlana', 'Vse'].map(k => `<button data-k="${k}" class="${st.kdo === k ? 'akt' : ''}">${k}</button>`).join('')}</div>${preklopPogled(st.pogled)}</div>
     <div class="orodja"><label class="stevec"><input type="checkbox" id="obiskani" ${st.obiskani ? 'checked' : ''} style="width:auto"> pokaži tudi obiskane</label><span class="stevec">${arr.length} ciljev · razvrščeno po prioriteti in vožnji</span></div>
     <div id="rez"></div>`;
-  m.querySelectorAll('.zavihki .zav').forEach(b => b.onclick = () => { st.tip = b.dataset.tip; izrisi(); });
+  m.querySelectorAll('.zavihki .zav').forEach(b => b.onclick = () => {
+    const t = b.dataset.tip;
+    if (!t) st.tipi = [];
+    else if (st.tipi.includes(t)) st.tipi = st.tipi.filter(x => x !== t);
+    else st.tipi = [...st.tipi, t];
+    if (st.tipi.length === tipi.length) st.tipi = [];   // vse izbrane = Vse
+    localStorage.setItem('izleti_seznam_tipi', JSON.stringify(st.tipi));
+    izrisi();
+  });
   m.querySelectorAll('[data-kdo] button').forEach(b => b.onclick = () => { st.kdo = b.dataset.k; izrisi(); });
   m.querySelectorAll('[data-pogled] button').forEach(b => b.onclick = () => { st.pogled = b.dataset.p; izrisi(); });
   $('#obiskani').onchange = e => { st.obiskani = e.target.checked; izrisi(); };

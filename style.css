@@ -112,3 +112,4 @@ textarea{min-height:70px;resize:vertical}
 .okno .moznosti{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 #obvestilo{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:10px;z-index:3000;font-size:14px;max-width:90vw}
 .nalaganje{text-align:center;padding:40px;color:var(--siva)}
+.zavihki.ovij{flex-wrap:wrap;overflow:visible}
