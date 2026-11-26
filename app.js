@@ -12,7 +12,7 @@ const S = {
   izvor: localStorage.getItem('izleti_izvor') || 'A',
   ver: 0, listi: {}, items: [],
   zaslon: [], // sklad zaslonov
-  seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', obiskani: false, pogled: 'seznam' },
+  seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', prikaz: 'cilji', pogled: 'seznam' },
   razisk: { pogled: 'seznam', f: privzetiFiltri(LIST_GORE) },
   vikend: { vir: 'seznam', f: privzetiFiltri(LIST_GORE), zadnji: [] },
 };
@@ -142,7 +142,9 @@ function filtriraj(f, nabor) {
       case 'nobeden': if (it.D || it.S) return false; break;
       case 'ne-D': if (it.D) return false; break;
       case 'ne-S': if (it.S) return false; break;
-      case 'obiskano': if (!it.D && !it.S) return false; break;
+      case 'bil-D': if (!it.D) return false; break;
+      case 'bil-S': if (!it.S) return false; break;
+      case 'bil-oba': if (!(it.D && it.S)) return false; break;
     }
     if (f.seznam === 'any' && !it.seznam) return false;
     if (f.seznam && f.seznam !== 'any' && it.seznam !== f.seznam) return false;
@@ -188,7 +190,7 @@ function filtriHtml(f, id) {
   let h = `<div class="zavihki" data-f="${id}">${tipi.map(t => `<button class="zav${f.tip === t ? ' akt' : ''}" data-tip="${esc(t)}">${IKONE[t] || '•'} ${esc(t)}</button>`).join('')}</div>
   <details class="filtri"${S['odprti_' + id] ? ' open' : ''} data-f="${id}"><summary>Filtri</summary><div class="fmreza">
    <label class="cela">Iskanje<input data-k="q" value="${esc(f.q)}" placeholder="ime, gorovje, opomba"></label>
-   <label>Obiskano<select data-k="status">${opt([['', 'vse'], ['ne-oba', 'še nisva bila oba'], ['nobeden', 'ni bil nihče'], ['ne-D', 'Danjel še ni bil'], ['ne-S', 'Svetlana še ni bila'], ['obiskano', 'že obiskano']], f.status)}</select></label>
+   <label>Obiskano<select data-k="status">${opt([['', 'vse'], ['ne-oba', 'še nisva bila oba'], ['nobeden', 'ni bil nihče'], ['ne-D', 'Danjel še ni bil'], ['ne-S', 'Svetlana še ni bila'], ['bil-D', 'Danjel je že bil'], ['bil-S', 'Svetlana je že bila'], ['bil-oba', 'sva bila že oba']], f.status)}</select></label>
    <label>Na seznamu<select data-k="seznam">${opt([['', 'vse'], ['any', 'na kateremkoli'], ['Skupaj', 'Skupaj'], ['Danjel', 'Danjel'], ['Svetlana', 'Svetlana']], f.seznam)}</select></label>
    <label>Vožnja (${IZVORI[S.izvor]})<select data-k="voznja">${opt(ure, f.voznja)}</select></label>`;
   if (gora) h += `
@@ -267,14 +269,26 @@ const najdi = (tip, kljuc) => S.items.find(i => i.tip === tip && String(i.kljuc)
 
 // ---------------- zemljevid ----------------
 let karta = null;
-function zemljevid(el, arr) {
+const KAT_BARVE = { 'Gora': '#c0392b', 'Hrib': '#e67e22', 'Kolesarjenje': '#2471a3', 'Pohodi': '#229954', 'Izleti': '#8e44ad',
+  'Deževni dnevi': '#17a2b8', 'Ostalo': '#d4ac0d', 'Ferate': '#6d4c41', 'Potovanja': '#e84393' };
+const katIme = it => it.gora ? (it.kat || 'Hrib') : it.tip;
+const katBarva = it => KAT_BARVE[katIme(it)] || '#555';
+const obiskanZa = (it, kdo) => kdo === 'Skupaj' ? (it.D && it.S) : kdo === 'Danjel' ? it.D : kdo === 'Svetlana' ? it.S : (it.D || it.S);
+function legendaKat(arr) {
+  const k = [...new Set(arr.map(katIme))].sort((a, b) => Object.keys(KAT_BARVE).indexOf(a) - Object.keys(KAT_BARVE).indexOf(b));
+  return `<div class="legenda">${k.map(x => `<span><i style="background:${KAT_BARVE[x] || '#555'}"></i>${x === 'Gora' ? 'Gore' : x === 'Hrib' ? 'Hribi' : x}</span>`).join('')}<span><i style="background:#fff;border:2px solid #777;width:9px;height:9px"></i>obiskano</span></div>`;
+}
+function zemljevid(el, arr, poKat, kdo) {
   if (karta) { karta.remove(); karta = null; }
   karta = L.map(el, { preferCanvas: true, zoomControl: true }).setView([46.1, 14.5], 8);
   podlaga(karta);
   const tocke = [];
   arr.forEach(it => {
     if (it.lat === null) return;
-    const m = L.circleMarker([it.lat, it.lon], { radius: 6, color: '#fff', weight: 1.2, fillColor: barvaHex(it), fillOpacity: .95 }).addTo(karta);
+    const ob = poKat && obiskanZa(it, kdo) && !odprtNaSeznamu(it, kdo);
+    const m = L.circleMarker([it.lat, it.lon], poKat
+      ? { radius: 7, color: ob ? katBarva(it) : '#fff', weight: ob ? 2.5 : 1.2, fillColor: ob ? '#fff' : katBarva(it), fillOpacity: .95 }
+      : { radius: 6, color: '#fff', weight: 1.2, fillColor: barvaHex(it), fillOpacity: .95 }).addTo(karta);
     const v = voznja(it);
     m.bindPopup(`<b>${esc(it.ime)}</b><br>${it.visina ? it.visina + ' m · ' : ''}${v !== null ? '🚗 ' + ura(v) : ''}${it.hoja ? ' · 🥾 ' + ura(it.hoja) : ''}<br><a href="#" data-odpri>Odpri podrobnosti ›</a>`);
     m.on('popupopen', e => e.popup.getElement().querySelector('[data-odpri]').onclick = ev => { ev.preventDefault(); odpriPodrobnosti(it.tip, it.kljuc); });
@@ -335,29 +349,33 @@ function zDomov(m) {
 function zSeznam(m) {
   $('#naslov').textContent = 'Najin seznam';
   const st = S.seznam;
-  const tipi = (S.tipi || []).filter(t => S.items.some(i => i.tip === t && i.seznam));
-  st.tipi = st.tipi.filter(t => tipi.includes(t));
-  let arr = S.items.filter(i => i.seznam && (st.obiskani ? (st.kdo === 'Vse' || i.seznam === st.kdo) : odprtNaSeznamu(i, st.kdo)));
-  if (st.tipi.length) arr = arr.filter(i => st.tipi.includes(i.tip));
-  arr.sort((a, b) => ((a.prio ?? 9) - (b.prio ?? 9)) || ((voznja(a) ?? 9999) - (voznja(b) ?? 9999)));
-  m.innerHTML = `<div class="zavihki ovij"><button class="zav${st.tipi.length ? '' : ' akt'}" data-tip="">Vse</button>${tipi.map(t => `<button class="zav${st.tipi.includes(t) ? ' akt' : ''}" data-tip="${esc(t)}">${st.tipi.includes(t) ? '✓ ' : ''}${IKONE[t] || ''} ${esc(t)}</button>`).join('')}</div>
+  const cilj = i => odprtNaSeznamu(i, st.kdo), bil = i => obiskanZa(i, st.kdo);
+  const osnova = S.items.filter(i => st.prikaz === 'cilji' ? cilj(i) : st.prikaz === 'obiskano' ? bil(i) : (cilj(i) || bil(i)));
+  const tipi = (S.tipi || []).filter(t => osnova.some(i => i.tip === t));
+  const izbrani = st.tipi.filter(t => tipi.includes(t));
+  let arr = izbrani.length ? osnova.filter(i => izbrani.includes(i.tip)) : osnova;
+  const datum = i => (st.kdo === 'Svetlana' ? i.o['Datum Svetlana'] : i.o['Datum Danjel'] || i.o['Datum Svetlana']) || i.o.Datum || '';
+  if (st.prikaz === 'obiskano') arr.sort((a, b) => datum(b).localeCompare(datum(a)) || a.ime.localeCompare(b.ime, 'sl'));
+  else arr.sort((a, b) => (bil(a) - bil(b)) || ((a.prio ?? 9) - (b.prio ?? 9)) || ((voznja(a) ?? 9999) - (voznja(b) ?? 9999)));
+  const opis = st.prikaz === 'obiskano' ? 'obiskanih · najnovejši najprej' : st.prikaz === 'vse' ? 'destinacij · najprej cilji' : 'ciljev · po prioriteti in vožnji';
+  m.innerHTML = `<div class="zavihki ovij"><button class="zav${izbrani.length ? '' : ' akt'}" data-tip="">Vse</button>${tipi.map(t => `<button class="zav${izbrani.includes(t) ? ' akt' : ''}" data-tip="${esc(t)}">${izbrani.includes(t) ? '✓ ' : ''}${IKONE[t] || ''} ${esc(t)}</button>`).join('')}</div>
     <div class="orodja"><div class="preklop" data-kdo>${['Skupaj', 'Danjel', 'Svetlana', 'Vse'].map(k => `<button data-k="${k}" class="${st.kdo === k ? 'akt' : ''}">${k}</button>`).join('')}</div>${preklopPogled(st.pogled)}</div>
-    <div class="orodja"><label class="stevec"><input type="checkbox" id="obiskani" ${st.obiskani ? 'checked' : ''} style="width:auto"> pokaži tudi obiskane</label><span class="stevec">${arr.length} ciljev · razvrščeno po prioriteti in vožnji</span></div>
+    <div class="orodja"><div class="preklop" data-prikaz>${[['cilji', 'Cilji'], ['obiskano', 'Obiskano'], ['vse', 'Oboje']].map(([k, t]) => `<button data-k="${k}" class="${st.prikaz === k ? 'akt' : ''}">${t}</button>`).join('')}</div><span class="stevec">${arr.length} ${opis}</span></div>
     <div id="rez"></div>`;
   m.querySelectorAll('.zavihki .zav').forEach(b => b.onclick = () => {
     const t = b.dataset.tip;
     if (!t) st.tipi = [];
-    else if (st.tipi.includes(t)) st.tipi = st.tipi.filter(x => x !== t);
-    else st.tipi = [...st.tipi, t];
+    else if (izbrani.includes(t)) st.tipi = izbrani.filter(x => x !== t);
+    else st.tipi = [...izbrani, t];
     if (st.tipi.length === tipi.length) st.tipi = [];   // vse izbrane = Vse
     localStorage.setItem('izleti_seznam_tipi', JSON.stringify(st.tipi));
     izrisi();
   });
   m.querySelectorAll('[data-kdo] button').forEach(b => b.onclick = () => { st.kdo = b.dataset.k; izrisi(); });
   m.querySelectorAll('[data-pogled] button').forEach(b => b.onclick = () => { st.pogled = b.dataset.p; izrisi(); });
-  $('#obiskani').onchange = e => { st.obiskani = e.target.checked; izrisi(); };
+  m.querySelectorAll('[data-prikaz] button').forEach(b => b.onclick = () => { st.prikaz = b.dataset.k; izrisi(); });
   const rez = $('#rez');
-  if (st.pogled === 'karta') { rez.innerHTML = '<div class="zemljevid" id="karta"></div>' + legenda; zemljevid($('#karta'), arr); }
+  if (st.pogled === 'karta') { rez.innerHTML = '<div class="zemljevid" id="karta"></div>' + legendaKat(arr); zemljevid($('#karta'), arr, true, st.kdo); }
   else { rez.className = 'seznam'; izrisiSeznam(rez, arr); }
 }
 
