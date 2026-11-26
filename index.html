@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2e5e4e">
+<title>Izleti</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <button id="nazaj" class="ikona" aria-label="Nazaj" hidden>‹</button>
+  <h1 id="naslov">Izleti</h1>
+  <button id="izvor" class="cip" title="Izhodišče za čas vožnje">🚗 Ajdovščina</button>
+</header>
+<main id="vsebina"></main>
+<div id="obvestilo" hidden></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
