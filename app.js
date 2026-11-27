@@ -18,7 +18,7 @@ const S = {
 };
 
 function privzetiFiltri(tip) {
-  return { tip, q: '', status: 'ne-oba', seznam: '', voznja: '', kat: '', gorovje: '', vmin: '', vmax: '',
+  return { tip, q: '', status: 'ne-oba', seznam: '', voznja: '', kat: '', vrsta: '', podvrsta: '', gorovje: '', vmin: '', vmax: '',
     hoja: '', vzpon: '', zaht: '', spp: '', dolzina: '', kolo: '', razvrsti: 'voznja' };
 }
 
@@ -104,6 +104,7 @@ function pripravi() {
         S: o['Svetlana ✔'] === true || o['Svetlana ✔'] === 'TRUE',
         seznam: o.Seznam || '', prio: num(o.Prioriteta), sezona: o.Sezona || '', opomba: o.Opomba || '',
         spp: o['SPP / RSPP'] || '', zaht: o.Zahtevnost || '',
+        vrsta: o.Vrsta || '', podvrsta: o.Podvrsta || '',
       };
       items.push(it);
     });
@@ -160,6 +161,8 @@ function filtriraj(f, nabor) {
       if (f.spp === 'RSPP' && it.spp !== 'RSPP') return false;
       if (f.spp === 'oba' && !it.spp) return false;
     }
+    if (f.vrsta && it.vrsta !== f.vrsta) return false;
+    if (f.podvrsta && it.podvrsta !== f.podvrsta) return false;
     if (f.hoja && (it.hoja === null || it.hoja > +f.hoja)) return false;
     if (f.vzpon && (it.vzpon === null || it.vzpon > +f.vzpon)) return false;
     if (f.dolzina && (it.dolzina === null || it.dolzina > +f.dolzina)) return false;
@@ -200,6 +203,12 @@ function filtriHtml(f, id) {
    <label>Višina do (m)<input data-k="vmax" type="number" inputmode="numeric" value="${esc(f.vmax)}"></label>
    <label>Zahtevnost<select data-k="zaht">${opt([['', 'vse'], ['lahka', 'lahka'], ['zaht', 'zahtevna'], ['zelo', 'zelo zahtevna']], f.zaht)}</select></label>
    <label>SPP / RSPP<select data-k="spp">${opt([['', 'vse'], ['oba', 'SPP ali RSPP'], ['SPP', 'samo SPP'], ['RSPP', 'samo RSPP']], f.spp)}</select></label>`;
+  const vrste = [...new Set(S.items.filter(i => i.tip === f.tip && i.vrsta).map(i => i.vrsta))].sort((a, b) => a.localeCompare(b, 'sl'));
+  if (!gora && vrste.length) {
+    const pv = [...new Set(S.items.filter(i => i.tip === f.tip && i.podvrsta && (!f.vrsta || i.vrsta === f.vrsta)).map(i => i.podvrsta))].sort((a, b) => a.localeCompare(b, 'sl'));
+    h += `<label>Vrsta<select data-k="vrsta">${opt([['', 'vse'], ...vrste.map(x => [x, x])], f.vrsta)}</select></label>
+   <label>Podvrsta<select data-k="podvrsta">${opt([['', 'vse'], ...pv.map(x => [x, x])], f.podvrsta)}</select></label>`;
+  }
   if (gora || pohod) h += `<label>Čas hoje<select data-k="hoja">${opt(ure, f.hoja)}</select></label>`;
   if (kolo) h += `<label>Čas kolesarjenja<select data-k="kolo">${opt(ure, f.kolo)}</select></label>`;
   if (gora || pohod || kolo) h += `
@@ -220,7 +229,7 @@ function poveziFiltre(root, f, id, ob) {
   if (det) det.ontoggle = () => S['odprti_' + id] = det.open;
   root.querySelectorAll(`details.filtri[data-f="${id}"] [data-k]`).forEach(el => {
     const ev = el.tagName === 'INPUT' ? 'input' : 'change';
-    el.addEventListener(ev, () => { f[el.dataset.k] = el.value; clearTimeout(poveziFiltre.t); poveziFiltre.t = setTimeout(() => ob(true), el.tagName === 'INPUT' ? 350 : 0); });
+    el.addEventListener(ev, () => { f[el.dataset.k] = el.value; if (el.dataset.k === 'vrsta') f.podvrsta = ''; clearTimeout(poveziFiltre.t); poveziFiltre.t = setTimeout(() => ob(el.dataset.k === 'vrsta' ? undefined : true), el.tagName === 'INPUT' ? 350 : 0); });
   });
   const p = root.querySelector(`[data-ponastavi="${id}"]`);
   if (p) p.onclick = () => { const t = f.tip; Object.keys(f).forEach(k => delete f[k]); Object.assign(f, privzetiFiltri(t)); ob(); };
@@ -238,7 +247,7 @@ function kartica(it) {
   if (it.zaht) zn.push(`<span class="zn">${esc(it.zaht.replace(' označena pot', '').replace(' pot', ''))}</span>`);
   if (it.spp) zn.push(`<span class="zn ${it.spp.toLowerCase()}">${esc(it.spp)}</span>`);
   if (it.prio) zn.push(`<span class="zn prio">P${it.prio}</span>`);
-  const pod = it.gora ? [it.visina ? it.visina + ' m' : '', it.gorovje].filter(Boolean).join(' · ') : (it.opomba || it.o['Kraj za izračun vožnje'] || '');
+  const pod = it.gora ? [it.visina ? it.visina + ' m' : '', it.gorovje].filter(Boolean).join(' · ') : ([it.podvrsta, it.opomba].filter(Boolean).join(' · ') || it.o['Kraj za izračun vožnje'] || '');
   const ob = it.D && it.S ? 'oba' : it.D ? 'Danjel' : it.S ? 'Svetlana' : '';
   return `<div class="kartica" data-kljuc="${esc(it.kljuc)}" data-tip="${esc(it.tip)}">
     <span class="pika" style="background:${barva(it)}"></span>
@@ -462,6 +471,7 @@ function zPodrobno(m, it) {
     dodaj('GPX', o['GPX dolžina (km)'] ? `${String(o['GPX dolžina (km)']).replace('.', ',')} km · ${ura(num(o['GPX čas']))} h · ↗ ${o['GPX vzpon (m)'] || '–'} m` : '');
     dodaj('Priljubljenost', o['Priljubljenost (%)'] ? o['Priljubljenost (%)'] + ' %' : '');
   } else {
+    dodaj('Vrsta', [v('Vrsta'), v('Podvrsta')].filter(Boolean).join(' – '));
     dodaj('Kraj', v('Kraj za izračun vožnje'));
     dodaj('Dolžina', it.dolzina ? String(it.dolzina).replace('.', ',') + ' km' : '');
     dodaj('Čas kolesarjenja', it.kolo ? ura(it.kolo) + ' h' : '');
