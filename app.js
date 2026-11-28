@@ -5,12 +5,17 @@ const LIST_GORE = 'Gore in hribi';
 const VRSTNI_RED = ['Gore in hribi', 'Kolesarjenje', 'Pohodi', 'Izleti', 'Deževni dnevi', 'Ostalo', 'Ferate', 'Potovanja'];
 const IKONE = { 'Gore in hribi': '⛰️', 'Kolesarjenje': '🚴', 'Pohodi': '🥾', 'Izleti': '🚗', 'Deževni dnevi': '☔', 'Ostalo': '🎡', 'Ferate': '🧗', 'Potovanja': '✈️' };
 const IZVORI = { A: 'Ajdovščina', M: 'Most na Soči' };
+const POTI_LISTI = {
+  'Poti': { nadrejeni: 'Gore in hribi', kljuc: 'ID vrha', obiskano: 'Prehojena' },
+  'Kolesarske poti': { nadrejeni: 'Kolesarjenje', kljuc: 'Cilj', obiskano: 'Prevožena' },
+};
+const BARVE_POTI = ['#d62f2f', '#1f6fd1', '#2e9e5b', '#e67e22', '#8e44ad', '#17a2b8', '#c0392b', '#6d4c41'];
 
 const S = {
   url: localStorage.getItem('izleti_url') || '',
   zeton: localStorage.getItem('izleti_zeton') || '',
   izvor: localStorage.getItem('izleti_izvor') || 'A',
-  ver: 0, listi: {}, items: [],
+  ver: 0, listi: {}, items: [], poti: [],
   zaslon: [], // sklad zaslonov
   seznam: { tipi: JSON.parse(localStorage.getItem('izleti_seznam_tipi') || '[]'), kdo: 'Skupaj', prikaz: 'cilji', pogled: 'seznam', barve: localStorage.getItem('izleti_barve') || 'kat' },
   razisk: { pogled: 'seznam', f: privzetiFiltri(LIST_GORE) },
@@ -53,9 +58,19 @@ async function apiPost(body) {
 }
 
 // ---------------- podatki ----------------
-function naloziPredpomnilnik() {
+// predpomnilnik v IndexedDB (podatki s potmi so preveliki za localStorage)
+const idb = (() => {
+  let p;
+  const db = () => p || (p = new Promise((res, rej) => { const r = indexedDB.open('izleti', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }));
+  return {
+    get: async k => { const d = await db(); return new Promise(res => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => res(null); }); },
+    set: async (k, v) => { const d = await db(); return new Promise(res => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = res; }); },
+  };
+})();
+async function naloziPredpomnilnik() {
   try {
-    const c = JSON.parse(localStorage.getItem('izleti_podatki') || 'null');
+    let c = await idb.get('podatki');
+    if (!c) { c = JSON.parse(localStorage.getItem('izleti_podatki') || 'null'); }
     if (c) { S.ver = c.ver; S.listi = c.listi; pripravi(); return true; }
   } catch (e) {}
   return false;
@@ -69,7 +84,7 @@ async function osvezi(prisilno) {
     }
     const d = await api({ a: 'data' });
     S.ver = d.ver; S.listi = d.listi;
-    try { localStorage.setItem('izleti_podatki', JSON.stringify({ ver: d.ver, listi: d.listi })); } catch (e) {}
+    shraniLokalno();
     pripravi();
     izrisi();
     if (prisilno) obvesti('Podatki osveženi');
@@ -79,7 +94,7 @@ async function osvezi(prisilno) {
 function pripravi() {
   const items = [];
   const idx = t => { const i = VRSTNI_RED.indexOf(t); return i < 0 ? 99 : i; };
-  const tipi = Object.keys(S.listi).sort((a, b) => idx(a) - idx(b));
+  const tipi = Object.keys(S.listi).filter(t => !POTI_LISTI[t]).sort((a, b) => idx(a) - idx(b));
   tipi.forEach(tip => {
     (S.listi[tip].vrstice || []).forEach(o => {
       const gora = tip === LIST_GORE;
@@ -111,6 +126,44 @@ function pripravi() {
   });
   S.items = items;
   S.tipi = tipi;
+  // poti
+  const poMap = new Map(items.map(i => [i.tip + '|' + i.kljuc, i]));
+  S.poti = [];
+  Object.entries(POTI_LISTI).forEach(([list, cfg]) => {
+    (S.listi[list]?.vrstice || []).forEach(o => {
+      const kl = String(o[cfg.kljuc] ?? '');
+      const st = poMap.get(cfg.nadrejeni + '|' + kl);
+      const ko = koord(o['Koordinate izhodišča']);
+      const p = {
+        list, o, st,
+        key: o.Povezava || (kl + '|' + (o.Pot || '')),
+        ime: o.Pot || 'pot', izhodisce: o['Izhodišče'] || '', izhV: num(o['Višina izhodišča (m)']), izhK: ko,
+        hoja: num(o['Čas (min)']) ?? num(o['Čas hoje']) ?? num(o['GPX čas']),
+        kolo: num(o['Čas kolesarjenja']),
+        dolzina: num(o['Dolžina (km)'] ?? o['GPX dolžina (km)']),
+        vzpon: num(o['Višinska razlika (m)'] ?? o['Vzpon (m)'] ?? o['GPX vzpon (m)']),
+        zaht: o.Zahtevnost || '', ferata: o.Ferata || '',
+        vA: num(o['Vožnja iz Ajdovščine']), vM: num(o['Vožnja iz Mosta na Soči']),
+        glavna: o.Glavna === true || o.Glavna === 'TRUE', lastna: o.Lastna === true || o.Lastna === 'TRUE',
+        obiskana: o[cfg.obiskano] === true || o[cfg.obiskano] === 'TRUE',
+        gpx: o['GPX (Drive)'] || '', url: (o.Povezava || '').startsWith('http') ? o.Povezava : '',
+      };
+      if (!st) return;
+      (st.poti = st.poti || []).push(p);
+      S.poti.push(p);
+    });
+  });
+  S.items.forEach(i => { if (i.poti) i.poti.sort((a, b) => (b.glavna - a.glavna) || ((a.hoja ?? a.dolzina ?? 9999) - (b.hoja ?? b.dolzina ?? 9999))); });
+}
+/** Pot kot element za seznam/filtre (podatki poti + lastnosti cilja). */
+function potKotItem(p) {
+  const s = p.st;
+  return Object.assign(Object.create(s), {
+    jePot: true, pot: p, ime: s.ime + ' – ' + p.ime,
+    lat: p.izhK ? p.izhK[0] : s.lat, lon: p.izhK ? p.izhK[1] : s.lon,
+    hoja: p.hoja, kolo: p.kolo, dolzina: p.dolzina, vzpon: p.vzpon, zaht: p.zaht || s.zaht,
+    vA: p.vA ?? s.vA, vM: p.vM ?? s.vM,
+  });
 }
 const voznja = it => S.izvor === 'A' ? it.vA : it.vM;
 function barva(it) {
@@ -137,7 +190,7 @@ function filtriraj(f, nabor) {
   const q = norm(f.q);
   let out = nabor.filter(it => {
     if (f.tip && f.tip !== 'Vse' && it.tip !== f.tip) return false;
-    if (q && !norm(it.ime + ' ' + it.gorovje + ' ' + it.opomba).includes(q)) return false;
+    if (q && !norm(it.ime + ' ' + it.gorovje + ' ' + it.opomba + (it.jePot ? ' ' + it.pot.izhodisce : '')).includes(q)) return false;
     switch (f.status) {
       case 'ne-oba': if (it.D && it.S) return false; break;
       case 'nobeden': if (it.D || it.S) return false; break;
@@ -249,6 +302,15 @@ function kartica(it) {
   if (it.prio) zn.push(`<span class="zn prio">P${it.prio}</span>`);
   const pod = it.gora ? [it.visina ? it.visina + ' m' : '', it.gorovje].filter(Boolean).join(' · ') : ([it.podvrsta, it.opomba].filter(Boolean).join(' · ') || it.o['Kraj za izračun vožnje'] || '');
   const ob = it.D && it.S ? 'oba' : it.D ? 'Danjel' : it.S ? 'Svetlana' : '';
+  if (it.jePot) {
+    const p = it.pot;
+    const pod2 = [p.izhodisce ? 'iz ' + p.izhodisce + (p.izhV ? ' (' + p.izhV + ' m)' : '') : '', it.visina ? 'vrh ' + it.visina + ' m' : ''].filter(Boolean).join(' · ');
+    return `<div class="kartica" data-kljuc="${esc(it.kljuc)}" data-tip="${esc(it.tip)}" data-pot="${esc(p.key)}">
+    <span class="pika" style="background:${barva(it)}"></span>
+    <div class="tel"><div class="ime">${esc(it.ime)}${p.glavna ? ' ⭐' : ''}${p.gpx ? ' 📍' : ''}</div>
+    <div class="pod">${esc(pod2)}</div><div class="znacke">${zn.join('')}</div></div>
+    ${p.obiskana ? '<span class="obisk">✓ prehojena</span>' : ''}</div>`;
+  }
   return `<div class="kartica" data-kljuc="${esc(it.kljuc)}" data-tip="${esc(it.tip)}">
     <span class="pika" style="background:${barva(it)}"></span>
     <div class="tel"><div class="ime">${S.zaslon.at(-1) === 'seznam' && S.seznam.tipi.length !== 1 ? (IKONE[it.tip] || '') + ' ' : ''}${esc(it.ime)}</div>
@@ -272,7 +334,7 @@ function izrisiSeznam(el, arr) {
   };
   el.innerHTML = arr.length ? '' : '<div class="prazno">Ni zadetkov.</div>';
   if (arr.length) dodaj();
-  el.onclick = e => { const k = e.target.closest('.kartica'); if (k) odpriPodrobnosti(k.dataset.tip, k.dataset.kljuc); };
+  el.onclick = e => { const k = e.target.closest('.kartica'); if (k) odpriPodrobnosti(k.dataset.tip, k.dataset.kljuc, k.dataset.pot); };
 }
 const najdi = (tip, kljuc) => S.items.find(i => i.tip === tip && String(i.kljuc) === String(kljuc));
 
@@ -300,7 +362,7 @@ function zemljevid(el, arr, poKat, kdo) {
       : { radius: 6, color: '#fff', weight: 1.2, fillColor: barvaHex(it), fillOpacity: .95 }).addTo(karta);
     const v = voznja(it);
     m.bindPopup(`<b>${esc(it.ime)}</b><br>${it.visina ? it.visina + ' m · ' : ''}${v !== null ? '🚗 ' + ura(v) : ''}${it.hoja ? ' · 🥾 ' + ura(it.hoja) : ''}<br><a href="#" data-odpri>Odpri podrobnosti ›</a>`);
-    m.on('popupopen', e => e.popup.getElement().querySelector('[data-odpri]').onclick = ev => { ev.preventDefault(); odpriPodrobnosti(it.tip, it.kljuc); });
+    m.on('popupopen', e => e.popup.getElement().querySelector('[data-odpri]').onclick = ev => { ev.preventDefault(); odpriPodrobnosti(it.tip, it.kljuc, it.jePot ? it.pot.key : undefined); });
     tocke.push([it.lat, it.lon]);
   });
   if (tocke.length) karta.fitBounds(tocke, { padding: [20, 20], maxZoom: 12 });
@@ -397,9 +459,15 @@ function zSeznam(m) {
 function zRaziskuj(m, samoRez) {
   $('#naslov').textContent = 'Raziskuj';
   const st = S.razisk;
-  const arr = filtriraj(st.f, S.items);
-  if (samoRez && $('#rez')) { $('#stevec').textContent = arr.length + ' zadetkov'; return prikaziRez(arr, st.pogled); }
-  m.innerHTML = filtriHtml(st.f, 'r') + `<div class="orodja"><span class="stevec" id="stevec">${arr.length} zadetkov</span>${preklopPogled(st.pogled)}</div><div id="rez"></div>`;
+  const imaPoti = S.poti.some(p => p.st.tip === st.f.tip);
+  const poPoteh = imaPoti && st.nacin === 'poti';
+  const nabor = poPoteh ? S.poti.filter(p => p.st.tip === st.f.tip).map(potKotItem) : S.items;
+  const arr = filtriraj(st.f, nabor);
+  const enota = poPoteh ? ' poti' : ' zadetkov';
+  if (samoRez && $('#rez')) { $('#stevec').textContent = arr.length + enota; return prikaziRez(arr, st.pogled); }
+  const preklopPoti = imaPoti ? `<div class="preklop" data-nacin><button data-n="cilji" class="${poPoteh ? '' : 'akt'}">${st.f.tip === 'Kolesarjenje' ? 'Cilji' : 'Vrhovi'}</button><button data-n="poti" class="${poPoteh ? 'akt' : ''}">Poti</button></div>` : '';
+  m.innerHTML = filtriHtml(st.f, 'r') + `<div class="orodja">${preklopPoti}<span class="stevec" id="stevec">${arr.length}${enota}</span>${preklopPogled(st.pogled)}</div><div id="rez"></div>`;
+  m.querySelectorAll('[data-nacin] button').forEach(b => b.onclick = () => { st.nacin = b.dataset.n; zRaziskuj(m); });
   poveziFiltre(m, st.f, 'r', (le) => zRaziskuj(m, le));
   m.querySelectorAll('[data-pogled] button').forEach(b => b.onclick = () => { st.pogled = b.dataset.p; zRaziskuj(m); });
   prikaziRez(arr, st.pogled);
@@ -440,10 +508,12 @@ function zVikend(m, samoRez) {
 }
 
 // ---------------- podrobnosti ----------------
-function odpriPodrobnosti(tip, kljuc) {
+function odpriPodrobnosti(tip, kljuc, potKey) {
   const it = najdi(tip, kljuc);
   if (!it) return;
   S.podrobno = it;
+  S.izbranaPot = potKey || null;
+  S.vsePoti = false;
   pojdi('podrobno:' + tip + ':' + kljuc);
 }
 
@@ -460,7 +530,7 @@ function zPodrobno(m, it) {
     dodaj('Država', v('Država'));
     dodaj('Vrsta', v('Vrsta'));
     dodaj('SPP / RSPP', v('SPP / RSPP'));
-    dodaj('Izhodišče', [v('Izhodišče (najkrajša pot)'), o['Višina izhodišča (m)'] ? '(' + o['Višina izhodišča (m)'] + ' m)' : ''].filter(Boolean).join(' '));
+    dodaj('Izhodišče (glavna pot)', [v('Izhodišče (najkrajša pot)'), o['Višina izhodišča (m)'] ? '(' + o['Višina izhodišča (m)'] + ' m)' : ''].filter(Boolean).join(' '));
     dodaj('Čas hoje', it.hoja ? ura(it.hoja) + ' h' : '');
     dodaj('Dolžina poti', o['Dolžina poti (km)'] ? String(o['Dolžina poti (km)']).replace('.', ',') + ' km' : '');
     dodaj('Višinska razlika', o['Višinska razlika (m)'] ? o['Višinska razlika (m)'] + ' m' : '');
@@ -485,9 +555,11 @@ function zPodrobno(m, it) {
   dodaj('Danjel', obD);
   dodaj('Svetlana', obS);
 
-  const nav = it.izh || (it.lat !== null ? [it.lat, it.lon] : null);
+  const izbr = (it.poti || []).find(p => p.key === S.izbranaPot);
+  const nav = (izbr && izbr.izhK) || it.izh || (it.lat !== null ? [it.lat, it.lon] : null);
   const povez = [];
-  if (nav) povez.push(`<a class="gumb" href="geo:${nav[0]},${nav[1]}?q=${nav[0]},${nav[1]}(${encodeURIComponent(it.gora && o['Izhodišče (najkrajša pot)'] ? o['Izhodišče (najkrajša pot)'] : it.ime)})">🧭 Navigacija${it.izh ? ' do izhodišča' : ''}</a>`);
+  const navIme = izbr ? izbr.izhodisce : (it.gora && o['Izhodišče (najkrajša pot)'] ? o['Izhodišče (najkrajša pot)'] : it.ime);
+  if (nav) povez.push(`<a class="gumb" id="navGumb" href="geo:${nav[0]},${nav[1]}?q=${nav[0]},${nav[1]}(${encodeURIComponent(navIme || it.ime)})">🧭 Navigacija${(izbr && izbr.izhK) || it.izh ? ' do izhodišča' : ''}</a>`);
   if (o['hribi.net']) povez.push(`<a class="gumb svetel" target="_blank" rel="noopener" href="${esc(o['hribi.net'])}">hribi.net</a>`);
   if (o['Najkrajša pot']) povez.push(`<a class="gumb svetel" target="_blank" rel="noopener" href="${esc(o['Najkrajša pot'])}">Opis poti</a>`);
   if (o['GPX (Drive)']) povez.push(`<a class="gumb svetel" target="_blank" rel="noopener" href="${esc(o['GPX (Drive)'])}">GPX</a>`);
@@ -498,8 +570,9 @@ function zPodrobno(m, it) {
     <h2>${IKONE[it.tip] || ''} ${esc(it.ime)}</h2>
     <div class="pod">${esc(it.gora ? [it.visina ? it.visina + ' m' : '', it.gorovje].filter(Boolean).join(' · ') : it.tip)}</div>
     <div class="vreme" id="vreme"><div style="grid-column:1/-1">Nalagam vremensko napoved …</div></div>
-    ${(it.lat !== null || o['GPX (Drive)']) ? '<div class="mini-zemljevid" id="mkarta"></div>' : ''}
+    ${(it.lat !== null || o['GPX (Drive)'] || (it.poti && it.poti.some(p => p.izhK))) ? '<div class="mini-zemljevid" id="mkarta"></div>' : ''}
     <div class="akcije">${povez.join('')}</div>
+    ${it.poti && it.poti.length ? `<div class="sekcija"><h3>Poti (${it.poti.length}) <small style="font-weight:400;color:var(--siva)">– tapni pot za podrobnosti</small></h3><div id="poti"></div></div>` : ''}
     <div class="sekcija"><h3>Podatki</h3><dl class="podatki">${vrstice.join('')}</dl></div>
     <div class="akcije"><button class="gumb" id="obisk">✓ Obiskano …</button></div>
     <div class="sekcija"><h3>Načrtovanje</h3><div class="fmreza">
@@ -508,7 +581,6 @@ function zPodrobno(m, it) {
       <label class="cela">Sezona<input id="eSezona" value="${esc(it.sezona)}" placeholder="npr. jeseni, spomladi"></label>
       <label class="cela">Opomba<textarea id="eOpomba">${esc(it.opomba)}</textarea></label>
       <button class="gumb cela" id="shrani">Shrani</button></div></div>
-    ${it.gora ? '<div class="sekcija"><h3>Vse poti</h3><div id="poti"><span class="stevec">Nalagam …</span></div></div>' : ''}
   </div>`;
 
   $('#shrani').onclick = async () => {
@@ -527,13 +599,15 @@ function zPodrobno(m, it) {
 
   vreme(it);
   if ($('#mkarta')) miniKarta(it);
-  if (it.gora && it.o.ID) poti(it);
+  if (it.poti && it.poti.length) potiSekcija(it);
 }
 
 function oknoObisk(it) {
   const ozadje = document.createElement('div');
   ozadje.className = 'okno-ozadje';
+  const izbr = (it.poti || []).find(p => p.key === S.izbranaPot);
   ozadje.innerHTML = `<div class="okno"><h3>Obiskano: ${esc(it.ime)}</h3>
+    ${izbr ? `<label class="stevec" style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="oPot" checked style="width:auto"> po poti: ${esc(izbr.ime)}</label>` : ''}
     <div class="moznosti"><button class="gumb svetel" data-kdo="D">Danjel</button><button class="gumb svetel" data-kdo="S">Svetlana</button><button class="gumb" data-kdo="oba">Oba</button></div>
     <label class="stevec">Datum<input type="date" id="oDatum" value="${danes()}"></label>
     <div class="akcije"><button class="gumb svetel" id="oPreklic" style="flex:1">Prekliči</button></div></div>`;
@@ -545,7 +619,9 @@ function oknoObisk(it) {
     const kdo = b.dataset.kdo, datum = $('#oDatum', ozadje).value || danes();
     ozadje.querySelectorAll('button').forEach(x => x.disabled = true);
     try {
-      await apiPost({ a: 'obisk', list: it.tip, kljuc: it.kljuc, kdo, datum });
+      const sPotjo = izbr && $('#oPot', ozadje) && $('#oPot', ozadje).checked;
+      await apiPost(Object.assign({ a: 'obisk', list: it.tip, kljuc: it.kljuc, kdo, datum }, sPotjo ? { potList: izbr.list, pot: izbr.key } : {}));
+      if (sPotjo) { izbr.obiskana = true; izbr.o[POTI_LISTI[izbr.list].obiskano] = true; }
       if (kdo !== 'S') { it.D = true; it.o['Danjel ✔'] = true; it.o['Datum Danjel'] = datum; }
       if (kdo !== 'D') { it.S = true; it.o['Svetlana ✔'] = true; it.o['Datum Svetlana'] = datum; }
       if (!it.gora) it.o.Datum = datum;
@@ -556,7 +632,8 @@ function oknoObisk(it) {
 }
 
 function shraniLokalno() {
-  try { localStorage.setItem('izleti_podatki', JSON.stringify({ ver: S.ver, listi: S.listi })); } catch (e) {}
+  idb.set('podatki', { ver: S.ver, listi: S.listi }).catch(() => {});
+  try { localStorage.removeItem('izleti_podatki'); } catch (e) {}
 }
 
 const WMO = c => c === 0 ? '☀️' : c <= 1 ? '🌤️' : c === 2 ? '⛅' : c === 3 ? '☁️' : c <= 48 ? '🌫️' : c <= 57 ? '🌦️' : c <= 67 ? '🌧️' : c <= 77 ? '🌨️' : c <= 82 ? '🌦️' : c <= 86 ? '🌨️' : '⛈️';
@@ -576,38 +653,122 @@ async function vreme(it) {
   } catch (e) { el.innerHTML = '<div style="grid-column:1/-1">Vremenske napovedi ni bilo mogoče naložiti.</div>'; }
 }
 
+function gpxId(g) { return g && (g.match(/\/d\/([\w-]{20,})/) || g.match(/[?&]id=([\w-]{20,})/) || [])[1]; }
+const gpxCache = {};
+async function naloziGpx(id) {
+  if (gpxCache[id]) return gpxCache[id];
+  const { gpx } = await api({ a: 'gpx', id });
+  const xml = new DOMParser().parseFromString(gpx, 'application/xml');
+  return (gpxCache[id] = [...xml.querySelectorAll('trkpt, rtept')].map(p => [+p.getAttribute('lat'), +p.getAttribute('lon')]));
+}
+let slojPoti = null;
 async function miniKarta(it) {
   if (karta) { karta.remove(); karta = null; }
   karta = L.map('mkarta', { zoomControl: true });
   podlaga(karta);
-  const meje = [];
-  if (it.lat !== null) { L.marker([it.lat, it.lon]).addTo(karta).bindPopup(esc(it.ime)); meje.push([it.lat, it.lon]); }
-  if (it.izh) { L.circleMarker(it.izh, { radius: 7, color: '#fff', weight: 2, fillColor: BARVE.D, fillOpacity: 1 }).addTo(karta).bindPopup('Izhodišče: ' + esc(it.o['Izhodišče (najkrajša pot)'] || '')); meje.push(it.izh); }
-  if (meje.length) karta.setView(meje[0], 13); else karta.setView([46.1, 14.5], 8);
-  if (meje.length > 1) karta.fitBounds(meje, { padding: [30, 30], maxZoom: 14 });
-  const g = it.o['GPX (Drive)'];
-  const id = g && (g.match(/\/d\/([\w-]{20,})/) || g.match(/[?&]id=([\w-]{20,})/) || [])[1];
-  if (id) {
-    try {
-      const { gpx } = await api({ a: 'gpx', id });
-      const xml = new DOMParser().parseFromString(gpx, 'application/xml');
-      const pts = [...xml.querySelectorAll('trkpt, rtept')].map(p => [+p.getAttribute('lat'), +p.getAttribute('lon')]);
-      if (pts.length && karta) {
-        const pl = L.polyline(pts, { color: '#d62f2f', weight: 4 }).addTo(karta);
-        karta.fitBounds(pl.getBounds(), { padding: [20, 20] });
-      }
-    } catch (e) { obvesti('GPX ni bilo mogoče naložiti'); }
-  }
+  slojPoti = L.layerGroup().addTo(karta);
+  if (it.lat !== null) L.marker([it.lat, it.lon]).addTo(karta).bindPopup(esc(it.ime));
+  karta.setView(it.lat !== null ? [it.lat, it.lon] : (it.izh || [46.1, 14.5]), it.lat !== null || it.izh ? 13 : 8);
   setTimeout(() => karta && karta.invalidateSize(), 60);
+  await risiPoti(it);
+}
+/** Na zemljevid nariše izbrano pot (ali vse poti) – izhodišča in sledi GPX. */
+async function risiPoti(it) {
+  if (!karta || !slojPoti) return;
+  slojPoti.clearLayers();
+  const meje = it.lat !== null ? [[it.lat, it.lon]] : [];
+  const poti = it.poti || [];
+  let izbor;
+  if (S.vsePoti) izbor = poti;
+  else {
+    const p = poti.find(x => x.key === S.izbranaPot) || poti.find(x => x.glavna);
+    izbor = p ? [p] : [];
+  }
+  const glavniGpx = !izbor.length && it.o['GPX (Drive)'] ? [{ gpx: it.o['GPX (Drive)'], izhK: it.izh, izhodisce: it.o['Izhodišče (najkrajša pot)'] || '', ime: 'glavna pot' }] : [];
+  if (!izbor.length && !glavniGpx.length && it.izh) izbor = [{ izhK: it.izh, izhodisce: it.o['Izhodišče (najkrajša pot)'] || '', ime: 'glavna pot' }];
+  const vse = izbor.length ? izbor : glavniGpx;
+  for (let i = 0; i < vse.length; i++) {
+    const p = vse[i], barvaP = BARVE_POTI[i % BARVE_POTI.length];
+    if (p.izhK) {
+      L.circleMarker(p.izhK, { radius: 7, color: '#fff', weight: 2, fillColor: S.vsePoti ? barvaP : BARVE.D, fillOpacity: 1 })
+        .addTo(slojPoti).bindPopup('Izhodišče: ' + esc(p.izhodisce) + '<br>' + esc(p.ime));
+      meje.push(p.izhK);
+    }
+    const id = gpxId(p.gpx);
+    if (id) {
+      try {
+        const pts = await naloziGpx(id);
+        if (pts.length && karta) { L.polyline(pts, { color: barvaP, weight: 4, opacity: .9 }).addTo(slojPoti); pts.forEach(x => meje.push(x)); }
+      } catch (e) { obvesti('GPX ni bilo mogoče naložiti'); }
+    }
+  }
+  if (karta && meje.length > 1) karta.fitBounds(meje, { padding: [25, 25], maxZoom: 14 });
 }
 
-async function poti(it) {
+function potiSekcija(it) {
   const el = $('#poti');
-  try {
-    const { poti } = await api({ a: 'poti', id: it.o.ID });
-    poti.sort((a, b) => (a.min || 9999) - (b.min || 9999));
-    el.innerHTML = poti.length ? poti.map(p => `<div class="pot"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.pot)}<br><small>${esc(p.cas)} · ${esc(p.zahtevnost)}</small></a></div>`).join('') : '<span class="stevec">Ni podatkov o poteh.</span>';
-  } catch (e) { el.innerHTML = '<span class="stevec">Poti ni bilo mogoče naložiti.</span>'; }
+  const cas = p => p.hoja ? ura(p.hoja) + ' h' : p.kolo ? ura(p.kolo) + ' h' : '';
+  const izbr = it.poti.find(p => p.key === S.izbranaPot);
+  el.innerHTML = `<div class="akcije" style="margin-top:0"><button class="gumb svetel mali" id="vsePoti">${S.vsePoti ? 'Pokaži samo izbrano' : 'Pokaži vse poti na zemljevidu'}</button></div>` +
+    it.poti.map((p, i) => {
+      const odprta = izbr && p.key === izbr.key;
+      const zn = [cas(p), p.dolzina ? String(p.dolzina).replace('.', ',') + ' km' : '', p.vzpon ? '↗ ' + p.vzpon + ' m' : ''].filter(Boolean).join(' · ');
+      let h = `<div class="pot" data-i="${i}" style="cursor:pointer${odprta ? ';background:#eef3f0;margin:0 -12px;padding:8px 12px' : ''}">
+        ${S.vsePoti ? `<i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${BARVE_POTI[i % BARVE_POTI.length]};margin-right:5px"></i>` : ''}
+        <b>${esc(p.ime)}</b>${p.glavna ? ' ⭐' : ''}${p.gpx ? ' 📍' : ''}${p.lastna ? ' <small>(lastna)</small>' : ''}${p.obiskana ? ' <small>✓</small>' : ''}
+        <br><small>${esc(zn)}${p.zaht ? ' · ' + esc(p.zaht) : ''}</small></div>`;
+      if (odprta) {
+        const v = voznja(p);
+        const d = [];
+        const dd = (t, x) => { if (x) d.push(`<dt>${t}</dt><dd>${x}</dd>`); };
+        dd('Izhodišče', esc(p.izhodisce) + (p.izhV ? ' (' + p.izhV + ' m)' : ''));
+        dd(p.kolo ? 'Čas kolesarjenja' : 'Čas hoje', cas(p));
+        dd('Dolžina', p.dolzina ? String(p.dolzina).replace('.', ',') + ' km' : '');
+        dd(p.kolo ? 'Vzpon' : 'Višinska razlika', p.vzpon ? p.vzpon + ' m' : '');
+        dd('Zahtevnost', esc(p.zaht)); dd('Ferata', esc(p.ferata));
+        dd('Oprema poletje', esc(p.o['Oprema poletje'] || '')); dd('Oprema zima', esc(p.o['Oprema zima'] || ''));
+        if (p.o['GPX dolžina (km)']) dd('GPX', `${String(p.o['GPX dolžina (km)']).replace('.', ',')} km · ${ura(num(p.o['GPX čas']))} h · ↗ ${p.o['GPX vzpon (m)'] || '–'} m`);
+        dd('Vožnja (' + IZVORI[S.izvor] + ')', v !== null ? ura(v) + ' h' : '');
+        dd('Opomba', esc(p.o.Opomba || ''));
+        h += `<div style="padding:4px 0 10px"><dl class="podatki">${d.join('')}</dl><div class="akcije">
+          ${p.izhK ? `<a class="gumb mali" href="geo:${p.izhK[0]},${p.izhK[1]}?q=${p.izhK[0]},${p.izhK[1]}(${encodeURIComponent(p.izhodisce || p.ime)})">🧭 Do izhodišča</a>` : ''}
+          ${p.url ? `<a class="gumb svetel mali" target="_blank" rel="noopener" href="${esc(p.url)}">Opis poti</a>` : ''}
+          ${p.gpx ? `<a class="gumb svetel mali" target="_blank" rel="noopener" href="${esc(p.gpx)}">GPX</a>` : ''}
+          ${p.glavna ? '' : `<button class="gumb svetel mali" data-glavna="${i}">⭐ Nastavi kot glavno pot</button>`}</div></div>`;
+      }
+      return h;
+    }).join('');
+  el.querySelectorAll('.pot[data-i]').forEach(x => x.onclick = () => {
+    const p = it.poti[+x.dataset.i];
+    S.izbranaPot = S.izbranaPot === p.key ? null : p.key;
+    S.vsePoti = false;
+    potiSekcija(it); risiPoti(it); posodobiNav(it);
+  });
+  $('#vsePoti', el).onclick = () => { S.vsePoti = !S.vsePoti; potiSekcija(it); risiPoti(it); };
+  el.querySelectorAll('[data-glavna]').forEach(b => b.onclick = async ev => {
+    ev.stopPropagation();
+    const p = it.poti[+b.dataset.glavna];
+    b.disabled = true; b.textContent = 'Shranjujem …';
+    try {
+      await apiPost({ a: 'glavna', list: p.list, pot: p.key });
+      it.poti.forEach(x => { x.glavna = x === p; x.o.Glavna = x === p; });
+      // podatke glavne poti prenesi na cilj (tudi lokalno, do naslednje osvežitve)
+      Object.assign(it, { hoja: p.hoja ?? it.hoja, dolzina: p.dolzina ?? it.dolzina, vzpon: p.vzpon ?? it.vzpon, zaht: p.zaht || it.zaht, vA: p.vA ?? it.vA, vM: p.vM ?? it.vM, izh: p.izhK || it.izh });
+      if (it.gora) Object.assign(it.o, { 'Izhodišče (najkrajša pot)': p.izhodisce, 'Koordinate izhodišča': p.o['Koordinate izhodišča'] });
+      it.poti.sort((a, c) => (c.glavna - a.glavna) || ((a.hoja ?? a.dolzina ?? 9999) - (c.hoja ?? c.dolzina ?? 9999)));
+      shraniLokalno();
+      obvesti('Glavna pot nastavljena ✓');
+      izrisi();
+    } catch (e) { obvesti('Napaka: ' + e.message, 4000); b.disabled = false; }
+  });
+}
+function posodobiNav(it) {
+  const a = $('#navGumb');
+  const p = (it.poti || []).find(x => x.key === S.izbranaPot);
+  const t = (p && p.izhK) || it.izh || (it.lat !== null ? [it.lat, it.lon] : null);
+  if (!a || !t) return;
+  const ime = p ? p.izhodisce : (it.o['Izhodišče (najkrajša pot)'] || it.ime);
+  a.href = `geo:${t[0]},${t[1]}?q=${t[0]},${t[1]}(${encodeURIComponent(ime || it.ime)})`;
 }
 
 // ---------------- statistika ----------------
@@ -677,8 +838,10 @@ $('#nazaj').onclick = () => history.back();
 $('#izvor').onclick = () => { S.izvor = S.izvor === 'A' ? 'M' : 'A'; localStorage.setItem('izleti_izvor', S.izvor); izrisi(); };
 S.zaslon = ['domov'];
 history.replaceState({ z: 1 }, '');
-if (naloziPredpomnilnik()) izrisi();
-else { $('#vsebina').innerHTML = '<div class="nalaganje">Nalagam podatke …</div>'; if (!S.url) izrisi(); }
-osvezi(!S.ver);
+(async () => {
+  if (await naloziPredpomnilnik()) izrisi();
+  else { $('#vsebina').innerHTML = '<div class="nalaganje">Nalagam podatke …</div>'; if (!S.url) izrisi(); }
+  osvezi(!S.ver);
+})();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') osvezi(false); });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
